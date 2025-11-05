@@ -66,7 +66,7 @@ def finetuning(opt, model, optimizer, scheduler, tokenizer, step):
     while step < opt.total_steps:
         logger.info(f"Start epoch {epoch}, number of batches: {len(train_dataloader)}")
         for i, batch in enumerate(train_dataloader):
-            batch = {key: value.cuda() if isinstance(value, torch.Tensor) else value for key, value in batch.items()}
+            batch = {key: value.to(device) if isinstance(value, torch.Tensor) else value for key, value in batch.items()}
             step += 1
 
             train_loss, iter_stats = model(**batch, stats_prefix="train")
@@ -147,7 +147,7 @@ def evaluate(opt, model, tokenizer, tb_logger, step):
     all_q, all_g, all_n = [], [], []
     with torch.no_grad():
         for i, batch in enumerate(dataloader):
-            batch = {key: value.cuda() if isinstance(value, torch.Tensor) else value for key, value in batch.items()}
+            batch = {key: value.to(device) if isinstance(value, torch.Tensor) else value for key, value in batch.items()}
 
             all_tokens = torch.cat([batch["g_tokens"], batch["n_tokens"]], dim=0)
             all_mask = torch.cat([batch["g_mask"], batch["n_mask"]], dim=0)
@@ -203,8 +203,6 @@ def main():
     opt = options.parse()
 
     torch.manual_seed(opt.seed)
-    slurm.init_distributed_mode(opt)
-    slurm.init_signal_handler()
 
     directory_exists = os.path.isdir(opt.output_dir)
     if dist.is_initialized():
@@ -222,7 +220,7 @@ def main():
     opt.retriever_model_id = retriever_model_id
     model = inbatch.InBatch(opt, retriever, tokenizer)
 
-    model = model.cuda()
+    model = model.to(device)
 
     optimizer, scheduler = utils.set_optim(opt, model)
     # if dist_utils.is_main():

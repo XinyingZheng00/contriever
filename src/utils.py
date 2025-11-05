@@ -14,6 +14,12 @@ Number = Union[float, int]
 
 logger = logging.getLogger(__name__)
 
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+elif torch.backends.mps.is_available():
+    device = torch.device("mps")
+else:
+    device = torch.device("cpu")
 
 def init_logger(args, stdout_only=False):
     if torch.distributed.is_initialized():
@@ -67,13 +73,17 @@ def load(model_class, dir_path, opt, reset_params=False):
     epoch_path = os.path.realpath(dir_path)
     checkpoint_path = os.path.join(epoch_path, "checkpoint.pth")
     logger.info(f"loading checkpoint {checkpoint_path}")
+    
+    if not os.path.isfile(checkpoint_path):
+        raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
+    
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     opt_checkpoint = checkpoint["opt"]
     state_dict = checkpoint["model"]
 
     model = model_class(opt_checkpoint)
     model.load_state_dict(state_dict, strict=True)
-    model = model.cuda()
+    model = model.to(device)
     step = checkpoint["step"]
     if not reset_params:
         optimizer, scheduler = set_optim(opt_checkpoint, model)

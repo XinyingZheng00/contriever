@@ -18,13 +18,29 @@ import numpy as np
 import torch
 import transformers
 
+import os
+import sys
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+sys.path.insert(0, project_root)
 import src.index
 import src.contriever
 import src.utils
-import src.slurm
 import src.data
 from src.evaluation import calculate_matches
 import src.normalize_text
+
+# ---------------------------
+# Device selection
+# ---------------------------
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+elif torch.backends.mps.is_available():
+    device = torch.device("mps")
+else:
+    device = torch.device("cpu")
+
+print(f"Using device: {device}")
+
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
@@ -50,7 +66,7 @@ def embed_queries(args, queries, model, tokenizer):
                     padding=True,
                     truncation=True,
                 )
-                encoded_batch = {k: v.cuda() for k, v in encoded_batch.items()}
+                encoded_batch = {k: v.to(device) for k, v in encoded_batch.items()}
                 output = model(**encoded_batch)
                 embeddings.append(output.cpu())
 
@@ -150,7 +166,7 @@ def main(args):
     print(f"Loading model from: {args.model_name_or_path}")
     model, tokenizer, _ = src.contriever.load_retriever(args.model_name_or_path)
     model.eval()
-    model = model.cuda()
+    model = model.to(device)
     if not args.no_fp16:
         model = model.half()
 
@@ -245,5 +261,4 @@ if __name__ == "__main__":
     parser.add_argument("--normalize_text", action="store_true", help="normalize text")
 
     args = parser.parse_args()
-    src.slurm.init_distributed_mode(args)
     main(args)

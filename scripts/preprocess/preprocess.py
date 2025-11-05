@@ -1,10 +1,13 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
-
+# So the expected input format is a plain text file where each line represents a separate document or passage that needs to be tokenized. 
 import os
 import argparse
 import torch
 
 import transformers
+import sys
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+sys.path.insert(0, project_root)
 from src.normalize_text import normalize
 
 
@@ -24,12 +27,17 @@ def apply_tokenizer(path, tokenizer, normalize_text=False):
 
             lines.append(line)
             if len(lines) > 1000000:
-                tokens = tokenizer.batch_encode_plus(lines, add_special_tokens=False)['input_ids']
+                tokens = tokenizer.batch_encode_plus(lines, 
+                                                     add_special_tokens=False,
+                                                     truncation=True,
+                                                     max_length=tokenizer.model_max_length)['input_ids']
                 tokens = [torch.tensor(x, dtype=torch.int) for x in tokens]
                 alltokens.extend(tokens)
                 lines = []
 
-    tokens = tokenizer.batch_encode_plus(lines, add_special_tokens=False)['input_ids']
+    tokens = tokenizer.batch_encode_plus(lines, add_special_tokens=False,
+                                                     truncation=True,
+                                                     max_length=tokenizer.model_max_length)['input_ids']
     tokens = [torch.tensor(x, dtype=torch.int) for x in tokens]
     alltokens.extend(tokens)
 

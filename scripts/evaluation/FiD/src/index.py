@@ -5,12 +5,15 @@
 # LICENSE file in the root directory of this source tree.
 
 import os
+import logging
 import pickle
 from typing import List, Tuple
 
 import faiss
 import numpy as np
 from tqdm import tqdm
+
+logger = logging.getLogger()
 
 class Indexer(object):
 
@@ -19,8 +22,7 @@ class Indexer(object):
             self.index = faiss.IndexPQ(vector_sz, n_subquantizers, n_bits, faiss.METRIC_INNER_PRODUCT)
         else:
             self.index = faiss.IndexFlatIP(vector_sz)
-        #self.index_id_to_db_id = np.empty((0), dtype=np.int64)
-        self.index_id_to_db_id = []
+        self.index_id_to_db_id = np.empty((0), dtype=np.int64)
 
     def index_data(self, ids, embeddings):
         self._update_id_mapping(ids)
@@ -29,10 +31,9 @@ class Indexer(object):
             self.index.train(embeddings)
         self.index.add(embeddings)
 
-        print(f'Total data indexed {len(self.index_id_to_db_id)}')
+        logger.info(f'Total data indexed {len(self.index_id_to_db_id)}')
 
-    def search_knn(self, query_vectors: np.array, top_docs: int, index_batch_size: int = 1) -> List[Tuple[List[object], List[float]]]:
-        print(f"Searching for {top_docs} documents in the index")
+    def search_knn(self, query_vectors: np.array, top_docs: int, index_batch_size=1024) -> List[Tuple[List[object], List[float]]]:
         query_vectors = query_vectors.astype('float32')
         result = []
         nbatch = (len(query_vectors)-1) // index_batch_size + 1
@@ -47,21 +48,21 @@ class Indexer(object):
         return result
 
     def serialize(self, dir_path):
-        index_file = os.path.join(dir_path, 'index.faiss')
-        meta_file = os.path.join(dir_path, 'index_meta.faiss')
-        print(f'Serializing index to {index_file}, meta data to {meta_file}')
+        index_file = dir_path / 'index.faiss'
+        meta_file = dir_path / 'index_meta.dpr'
+        logger.info(f'Serializing index to {index_file}, meta data to {meta_file}')
 
         faiss.write_index(self.index, index_file)
         with open(meta_file, mode='wb') as f:
             pickle.dump(self.index_id_to_db_id, f)
 
     def deserialize_from(self, dir_path):
-        index_file = os.path.join(dir_path, 'index.faiss')
-        meta_file = os.path.join(dir_path, 'index_meta.faiss')
-        print(f'Loading index from {index_file}, meta data from {meta_file}')
+        index_file = dir_path / 'index.faiss'
+        meta_file = dir_path / 'index_meta.dpr'
+        logger.info(f'Loading index from {index_file}, meta data from {meta_file}')
 
         self.index = faiss.read_index(index_file)
-        print('Loaded index of type %s and size %d', type(self.index), self.index.ntotal)
+        logger.info('Loaded index of type %s and size %d', type(self.index), self.index.ntotal)
 
         with open(meta_file, "rb") as reader:
             self.index_id_to_db_id = pickle.load(reader)
@@ -69,6 +70,5 @@ class Indexer(object):
             self.index_id_to_db_id) == self.index.ntotal, 'Deserialized index_id_to_db_id should match faiss index size'
 
     def _update_id_mapping(self, db_ids: List):
-        #new_ids = np.array(db_ids, dtype=np.int64)
-        #self.index_id_to_db_id = np.concatenate((self.index_id_to_db_id, new_ids), axis=0)
-        self.index_id_to_db_id.extend(db_ids)
+        new_ids = np.array(db_ids, dtype=np.int64)
+        self.index_id_to_db_id = np.concatenate((self.index_id_to_db_id, new_ids), axis=0)

@@ -10,7 +10,13 @@ from src import contriever, dist_utils, utils
 
 logger = logging.getLogger(__name__)
 
-
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+elif torch.backends.mps.is_available():
+    device = torch.device("mps")
+else:
+    device = torch.device("cpu")
+    
 class MoCo(nn.Module):
     def __init__(self, opt):
         super(MoCo, self).__init__()
@@ -118,7 +124,7 @@ class MoCo(nn.Module):
         logits = self._compute_logits(q, k) / self.temperature
 
         # labels: positive key indicators
-        labels = torch.zeros(bsz, dtype=torch.long).cuda()
+        labels = torch.zeros(bsz, dtype=torch.long).to(device)
 
         loss = torch.nn.functional.cross_entropy(logits, labels, label_smoothing=self.label_smoothing)
 

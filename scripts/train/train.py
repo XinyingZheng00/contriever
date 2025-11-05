@@ -13,12 +13,27 @@ import pickle
 import torch.distributed as dist
 from torch.utils.data import DataLoader, RandomSampler
 
+import sys
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+sys.path.insert(0, project_root)
 from src.options import Options
-from src import data, beir_utils, slurm, dist_utils, utils
+from src import data, beir_utils, dist_utils, utils
 from src import moco, inbatch
 
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------
+# Device selection
+# ---------------------------
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+elif torch.backends.mps.is_available():
+    device = torch.device("mps")
+else:
+    device = torch.device("cpu")
+
+print(f"Using device: {device}")
 
 
 def train(opt, model, optimizer, scheduler, step):
@@ -35,10 +50,11 @@ def train(opt, model, optimizer, scheduler, step):
     collator = data.Collator(opt=opt)
     train_dataset = data.load_data(opt, tokenizer)
     logger.warning(f"Data loading finished for rank {dist_utils.get_rank()}")
+    logger.info(f"Train dataset length: {len(train_dataset)}")
 
     train_sampler = RandomSampler(train_dataset)
     train_dataloader = DataLoader(
-        train_dataset,
+        train_dataset, 
         sampler=train_sampler,
         batch_size=opt.per_gpu_batch_size,
         drop_last=True,
@@ -54,9 +70,13 @@ def train(opt, model, optimizer, scheduler, step):
 
         logger.info(f"Start epoch {epoch}")
         for i, batch in enumerate(train_dataloader):
+            logger.info(f"Batch {i}/{len(train_dataloader)} (epoch {epoch})")
             step += 1
 
-            batch = {key: value.cuda() if isinstance(value, torch.Tensor) else value for key, value in batch.items()}
+            # Move tensors to device
+            batch = {key: value.to(device) if isinstance(value, torch.Tensor) else value
+                     for key, value in batch.items()}
+
             train_loss, iter_stats = model(**batch, stats_prefix="train")
 
             train_loss.backward()
@@ -74,7 +94,8 @@ def train(opt, model, optimizer, scheduler, step):
                     if tb_logger:
                         tb_logger.add_scalar(k, v, step)
                 log += f" | lr: {scheduler.get_last_lr()[0]:0.3g}"
-                log += f" | Memory: {torch.cuda.max_memory_allocated()//1e9} GiB"
+                if device.type == "cuda":
+                    log += f" | Memory: {torch.cuda.max_memory_allocated()//1e9} GiB"
 
                 logger.info(log)
                 run_stats.reset()
@@ -133,17 +154,16 @@ if __name__ == "__main__":
     opt = options.parse()
 
     torch.manual_seed(opt.seed)
-    slurm.init_distributed_mode(opt)
-    slurm.init_signal_handler()
-
+    
     directory_exists = os.path.isdir(opt.output_dir)
-    if dist.is_initialized():
-        dist.barrier()
+    checkpoint_exists = False
+    if directory_exists:
+        checkpoint_path = os.path.join(opt.output_dir, "checkpoint", "latest", "checkpoint.pth")
+        checkpoint_exists = os.path.isfile(checkpoint_path)
+
     os.makedirs(opt.output_dir, exist_ok=True)
     if not directory_exists and dist_utils.is_main():
         options.print_options(opt)
-    if dist.is_initialized():
-        dist.barrier()
     utils.init_logger(opt)
 
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -155,12 +175,14 @@ if __name__ == "__main__":
     else:
         raise ValueError(f"contrastive mode: {opt.contrastive_mode} not recognised")
 
+    print(f"directory_exists: {directory_exists}")
+    print(f"checkpoint_exists: {checkpoint_exists}")
+    print("the directory is :" + opt.output_dir)
     if not directory_exists and opt.model_path == "none":
-        model = model_class(opt)
-        model = model.cuda()
+        model = model_class(opt).to(device)
         optimizer, scheduler = utils.set_optim(opt, model)
         step = 0
-    elif directory_exists:
+    elif directory_exists and checkpoint_exists:
         model_path = os.path.join(opt.output_dir, "checkpoint", "latest")
         model, optimizer, scheduler, opt_checkpoint, step = utils.load(
             model_class,
@@ -168,6 +190,8 @@ if __name__ == "__main__":
             opt,
             reset_params=False,
         )
+        model = model.to(device)
+        step = 6500
         logger.info(f"Model loaded from {opt.output_dir}")
     else:
         model, optimizer, scheduler, opt_checkpoint, step = utils.load(
@@ -176,20 +200,12 @@ if __name__ == "__main__":
             opt,
             reset_params=False if opt.continue_training else True,
         )
+        model = model.to(device)
         if not opt.continue_training:
             step = 0
         logger.info(f"Model loaded from {opt.model_path}")
 
     logger.info(utils.get_parameters(model))
-
-    if dist.is_initialized():
-        model = torch.nn.parallel.DistributedDataParallel(
-            model,
-            device_ids=[opt.local_rank],
-            output_device=opt.local_rank,
-            find_unused_parameters=False,
-        )
-        dist.barrier()
 
     logger.info("Start training")
     train(opt, model, optimizer, scheduler, step)

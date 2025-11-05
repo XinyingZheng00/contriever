@@ -16,21 +16,42 @@ import torch
 
 import transformers
 
-import src.slurm
+import sys
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+sys.path.insert(0, project_root)
+
 import src.contriever
 import src.utils
 import src.data
 import src.normalize_text
 
+# ---------------------------
+# Device selection
+# ---------------------------
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+elif torch.backends.mps.is_available():
+    device = torch.device("mps")
+else:
+    device = torch.device("cpu")
+
+print(f"Using device: {device}")
+
+from tqdm import tqdm
+import torch
 
 def embed_passages(args, passages, model, tokenizer):
     total = 0
     allids, allembeddings = [], []
     batch_ids, batch_text = [], []
+
+    # Initialize tqdm progress bar
+    pbar = tqdm(total=len(passages), desc="Encoding passages", unit="passage")
+
     with torch.no_grad():
         for k, p in enumerate(passages):
             batch_ids.append(p["id"])
-            if args.no_title or not "title" in p:
+            if args.no_title or "title" not in p:
                 text = p["text"]
             else:
                 text = p["title"] + " " + p["text"]
@@ -40,8 +61,8 @@ def embed_passages(args, passages, model, tokenizer):
                 text = src.normalize_text.normalize(text)
             batch_text.append(text)
 
+            # When a full batch is ready or at the end
             if len(batch_text) == args.per_gpu_batch_size or k == len(passages) - 1:
-
                 encoded_batch = tokenizer.batch_encode_plus(
                     batch_text,
                     return_tensors="pt",
@@ -50,7 +71,7 @@ def embed_passages(args, passages, model, tokenizer):
                     truncation=True,
                 )
 
-                encoded_batch = {k: v.cuda() for k, v in encoded_batch.items()}
+                encoded_batch = {k: v.to(device) for k, v in encoded_batch.items()}
                 embeddings = model(**encoded_batch)
 
                 embeddings = embeddings.cpu()
@@ -58,20 +79,26 @@ def embed_passages(args, passages, model, tokenizer):
                 allids.extend(batch_ids)
                 allembeddings.append(embeddings)
 
+                # Update progress bar
+                pbar.update(len(batch_ids))
+
+                # Reset batch
                 batch_text = []
                 batch_ids = []
-                if k % 100000 == 0 and k > 0:
-                    print(f"Encoded passages {total}")
+
+                if total % 100000 == 0:
+                    pbar.write(f"Encoded {total:,} passages")
+
+    pbar.close()
 
     allembeddings = torch.cat(allembeddings, dim=0).numpy()
     return allids, allembeddings
-
 
 def main(args):
     model, tokenizer, _ = src.contriever.load_retriever(args.model_name_or_path)
     print(f"Model loaded from {args.model_name_or_path}.", flush=True)
     model.eval()
-    model = model.cuda()
+    model = model.to(device)
     if not args.no_fp16:
         model = model.half()
 
@@ -106,7 +133,7 @@ if __name__ == "__main__":
     parser.add_argument("--shard_id", type=int, default=0, help="Id of the current shard")
     parser.add_argument("--num_shards", type=int, default=1, help="Total number of shards")
     parser.add_argument(
-        "--per_gpu_batch_size", type=int, default=512, help="Batch size for the passage encoder forward pass"
+        "--per_gpu_batch_size", type=int, default=128, help="Batch size for the passage encoder forward pass"
     )
     parser.add_argument("--passage_maxlength", type=int, default=512, help="Maximum number of tokens in a passage")
     parser.add_argument(
@@ -118,7 +145,5 @@ if __name__ == "__main__":
     parser.add_argument("--normalize_text", action="store_true", help="lowercase text before encoding")
 
     args = parser.parse_args()
-
-    src.slurm.init_distributed_mode(args)
 
     main(args)
